@@ -16,7 +16,7 @@ interface ValidateOtpRequest {
 })
 export class OtpService {
 
-  private apiUrl = 'https://wakana.online/pharma-delivery/api/otp';
+  private apiUrl = 'https://solimus.sn:8082/api/otp';
 
   constructor(private http: HttpClient) {}
 

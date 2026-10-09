@@ -70,7 +70,8 @@ export class OtpModalComponent implements OnChanges, OnDestroy {
   }
 
   sendOtp() {
-    this.otpService.sendOtp(this.phoneNumber).subscribe({
+    this.otpService.sendOtp("+221765291234").subscribe({
+      //this.phoneNumber 
       next: () => console.log('OTP envoyé'),
       error: () => console.error('Erreur OTP'),
     });

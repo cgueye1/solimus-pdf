@@ -8,6 +8,7 @@ import {
   Input,
   Output,
   EventEmitter,
+  ChangeDetectorRef,
 } from '@angular/core';
 import { PDFField, PDFDocumentState } from './models/pdf.model';
 import { PdfService } from './services/pdf.service';
@@ -66,7 +67,9 @@ export class AppComponent implements OnInit {
   @Output() pageSelected = new EventEmitter<number>();
   @Output() close = new EventEmitter<void>();
 
-  @ViewChildren('thumbCanvas') thumbCanvases!: QueryList<ElementRef<HTMLCanvasElement>>;
+  @ViewChildren('thumbCanvas') thumbCanvases!: QueryList<
+    ElementRef<HTMLCanvasElement>
+  >;
 
   closeSidebar() {
     this.sidebarCollapsed = !this.sidebarCollapsed;
@@ -92,7 +95,8 @@ export class AppComponent implements OnInit {
 
   activeTool: string | null = null;
   showSignaturePad = false;
-  pendingSignaturePosition: { x: number; y: number; page: number } | null = null;
+  pendingSignaturePosition: { x: number; y: number; page: number } | null =
+    null;
   showSavedDocuments = false;
   selectedField: PDFField | null = null;
   textProperties = {
@@ -107,7 +111,12 @@ export class AppComponent implements OnInit {
     underline: false,
   };
 
-  drawingOptions: { color: string; lineWidth: number; opacity: number; blendMode?: 'normal' | 'multiply' } = {
+  drawingOptions: {
+    color: string;
+    lineWidth: number;
+    opacity: number;
+    blendMode?: 'normal' | 'multiply';
+  } = {
     color: '#FFFF00',
     lineWidth: 14,
     opacity: 0.35,
@@ -143,10 +152,35 @@ export class AppComponent implements OnInit {
     private storageService: StorageService,
     private notificationService: NotificationService,
     private docsService: DocsService,
+    private cd: ChangeDetectorRef,
   ) {
-    pdfjs.GlobalWorkerOptions.workerSrc = '/assets/js/pdf.worker.min.js';
+    this.initPdfWorkerWithBlob();
   }
 
+  private async initPdfWorkerWithBlob() {
+    try {
+      // 1. Charger le contenu du worker
+      const response = await fetch('/pdf/assets/js/pdf.worker.min.js');
+      const workerCode = await response.text();
+
+      // 2. Créer un Blob avec le code
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+
+      // 3. Configurer le worker avec l'URL du Blob
+      pdfjs.GlobalWorkerOptions.workerSrc = blobUrl;
+
+      // 4. Nettoyer l'URL après chargement
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+      console.log('✅ Worker PDF chargé via Blob');
+    } catch (error) {
+      console.error('❌ Erreur chargement worker:', error);
+      // Fallback CDN
+      pdfjs.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    }
+  }
   // ─── Zoom ─────────────────────────────────────────────────────────────────
 
   zoomIn() {
@@ -178,7 +212,8 @@ export class AppComponent implements OnInit {
   // ─── Thumbnails ───────────────────────────────────────────────────────────
 
   async generateThumbnails(): Promise<void> {
-    if (!this.pdfData || this.totalPages === 0 || this.isGeneratingThumbnails) return;
+    if (!this.pdfData || this.totalPages === 0 || this.isGeneratingThumbnails)
+      return;
 
     this.isGeneratingThumbnails = true;
     this.pages = Array.from({ length: this.totalPages }, (_, i) => i + 1);
@@ -220,11 +255,15 @@ export class AppComponent implements OnInit {
       const response = await fetch(url);
       if (!response.ok) throw new Error('HTTP error ' + response.status);
       const blob = await response.blob();
-      this.pdfFile = new File([blob], 'document.pdf', { type: 'application/pdf' });
+      this.pdfFile = new File([blob], 'document.pdf', {
+        type: 'application/pdf',
+      });
       await this.loadPdf();
     } catch (error) {
       console.error(error);
-      this.notificationService.error("Impossible de charger le PDF depuis l'URL");
+      this.notificationService.error(
+        "Impossible de charger le PDF depuis l'URL",
+      );
     }
   }
 
@@ -249,35 +288,31 @@ export class AppComponent implements OnInit {
         },
       });
   }
-
   ngOnInit(): void {
     this.route.queryParams.subscribe((params) => {
       const encryptedParam = params['pdfurl'];
 
       if (encryptedParam) {
-        // ── Mode Solimus : lien chiffré ──────────────────────────────────────
         try {
           const data = this.decryptData(encryptedParam);
           this.recivedData = data;
-          console.log('JSON récupéré :', data);
-          this.docId = data.id;
 
-          if (!data.initPdf) {
-            this.notificationService.error('Paramètre PDF invalide (initPdf manquant).');
-            return;
-          }
-          this.loadPdfFromUrl(environment.fileUrl + data.initPdf);
+          this.docId = data.id;
+           this.userPhoneNumber = data.signerNumber;
+
+          const url = environment.fileUrl + data.initPdf;
+
+          setTimeout(() => {
+            this.loadPdfFromUrl(url);
+            this.cd.detectChanges(); // 🔥 force refresh
+          }, 0);
         } catch (error) {
           console.error('Erreur de déchiffrement', error);
-          this.notificationService.error(
-            "Impossible de lire le lien PDF. Vérifiez l'URL ou la clé de déchiffrement.",
-          );
         }
-      } else {
-        // ── Mode standalone : pas de pdfurl ─────────────────────────────────
-        this.historyService.loadFromLocalStorage();
       }
     });
+
+    this.historyService.loadFromLocalStorage();
   }
 
   // ─── Chargement fichier ───────────────────────────────────────────────────
@@ -303,7 +338,9 @@ export class AppComponent implements OnInit {
         updatedAt: new Date(),
       };
 
-      const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
+      const blob = new Blob([new Uint8Array(pdfBytes)], {
+        type: 'application/pdf',
+      });
       if (this.pdfUrl) URL.revokeObjectURL(this.pdfUrl);
       this.pdfUrl = URL.createObjectURL(blob);
       this.pdfFile = null;
@@ -312,7 +349,9 @@ export class AppComponent implements OnInit {
       await this.generateThumbnails();
       this.saveState();
     } catch (error) {
-      this.notificationService.error('Erreur lors de la création du PDF vierge.');
+      this.notificationService.error(
+        'Erreur lors de la création du PDF vierge.',
+      );
     }
   }
 
@@ -343,7 +382,9 @@ export class AppComponent implements OnInit {
       }
 
       this.pdfData = originalBuffer.slice(0);
-      const fileCopy = new File([originalBuffer], fileName, { type: this.pdfFile.type });
+      const fileCopy = new File([originalBuffer], fileName, {
+        type: this.pdfFile.type,
+      });
       this.pdfUrl = URL.createObjectURL(fileCopy);
 
       // Récupérer nb pages + dimensions avec fallback pdfjs
@@ -352,11 +393,15 @@ export class AppComponent implements OnInit {
         this.pageDimensions = await this.pdfService.getPageDimensions(0);
       } catch {
         try {
-          const pdf = await pdfjs.getDocument({ data: this.pdfData!.slice(0) }).promise;
+          const pdf = await pdfjs.getDocument({ data: this.pdfData!.slice(0) })
+            .promise;
           this.totalPages = pdf.numPages;
           const page = await pdf.getPage(1);
           const viewport = page.getViewport({ scale: 1 });
-          this.pageDimensions = { width: viewport.width, height: viewport.height };
+          this.pageDimensions = {
+            width: viewport.width,
+            height: viewport.height,
+          };
           pdf.destroy().catch(() => {});
         } catch {
           this.totalPages = 1;
@@ -387,7 +432,11 @@ export class AppComponent implements OnInit {
       this.hideRedactFields();
     }
 
-    if (['highlight', 'line', 'arrow', 'rectangle', 'circle', 'eraser'].includes(tool)) {
+    if (
+      ['highlight', 'line', 'arrow', 'rectangle', 'circle', 'eraser'].includes(
+        tool,
+      )
+    ) {
       this.isDrawingMode = true;
       this.drawingTool = tool === 'eraser' ? 'mask' : tool;
     } else {
@@ -396,7 +445,11 @@ export class AppComponent implements OnInit {
     }
   }
 
-  onDrawingOptionsChange(options: { color?: string; lineWidth?: number; opacity?: number }): void {
+  onDrawingOptionsChange(options: {
+    color?: string;
+    lineWidth?: number;
+    opacity?: number;
+  }): void {
     this.drawingOptions = { ...this.drawingOptions, ...options };
   }
 
@@ -405,21 +458,32 @@ export class AppComponent implements OnInit {
   private restoreRedactFields(): void {
     if (!this.pdfFile) return;
     const fileName = this.pdfFile.name;
-    const savedDoc = this.storageService.getAllDocuments().find((doc) => doc.name === fileName);
+    const savedDoc = this.storageService
+      .getAllDocuments()
+      .find((doc) => doc.name === fileName);
     if (savedDoc) {
       const redactFields = savedDoc.fields.filter((f) => f.type === 'redact');
       const existingRedactIds = this.currentDocument.fields
         .filter((f) => f.type === 'redact')
         .map((f) => f.id);
-      const newRedactFields = redactFields.filter((f) => !existingRedactIds.includes(f.id));
+      const newRedactFields = redactFields.filter(
+        (f) => !existingRedactIds.includes(f.id),
+      );
       if (newRedactFields.length > 0) {
-        this.currentDocument.fields = [...this.currentDocument.fields, ...newRedactFields];
+        this.currentDocument.fields = [
+          ...this.currentDocument.fields,
+          ...newRedactFields,
+        ];
         this.saveState();
       }
     }
   }
 
-  async onPageClick(event: { x: number; y: number; page: number }): Promise<void> {
+  async onPageClick(event: {
+    x: number;
+    y: number;
+    page: number;
+  }): Promise<void> {
     if (!this.activeTool) return;
     if (this.activeTool === 'eraser') return;
     if (this.isDrawingMode) return;
@@ -446,35 +510,59 @@ export class AppComponent implements OnInit {
             italic: this.textProperties.italic || false,
             underline: this.textProperties.underline || false,
           };
-          this.currentDocument.fields = [...this.currentDocument.fields, newField];
+          this.currentDocument.fields = [
+            ...this.currentDocument.fields,
+            newField,
+          ];
           this.currentDocument.updatedAt = new Date();
           this.saveState();
           return;
 
         case 'checkbox':
-          const checkboxSize = Math.max(10, Math.round((this.textProperties.fontSize || 12) * 0.6));
+          const checkboxSize = Math.max(
+            10,
+            Math.round((this.textProperties.fontSize || 12) * 0.6),
+          );
           newField = await this.pdfService.addCheckbox(
-            true, event.x, event.y - checkboxSize / 2, event.page - 1, checkboxSize,
+            true,
+            event.x,
+            event.y - checkboxSize / 2,
+            event.page - 1,
+            checkboxSize,
             { fontSize: checkboxSize },
           );
           break;
 
         case 'input': {
           const label = prompt('Label du champ (optionnel):', '') || undefined;
-          const placeholder = prompt('Placeholder (optionnel):', '') || undefined;
+          const placeholder =
+            prompt('Placeholder (optionnel):', '') || undefined;
           newField = await this.pdfService.addInputField(
-            event.x, event.y, event.page - 1, 200, 20,
-            label, placeholder, this.textProperties,
+            event.x,
+            event.y,
+            event.page - 1,
+            200,
+            20,
+            label,
+            placeholder,
+            this.textProperties,
           );
           break;
         }
 
         case 'textarea': {
           const label = prompt('Label du champ (optionnel):', '') || undefined;
-          const placeholder = prompt('Placeholder (optionnel):', '') || undefined;
+          const placeholder =
+            prompt('Placeholder (optionnel):', '') || undefined;
           newField = await this.pdfService.addTextareaField(
-            event.x, event.y, event.page - 1, 300, 80,
-            label, placeholder, this.textProperties,
+            event.x,
+            event.y,
+            event.page - 1,
+            300,
+            80,
+            label,
+            placeholder,
+            this.textProperties,
           );
           break;
         }
@@ -484,14 +572,20 @@ export class AppComponent implements OnInit {
           return;
 
         case 'signature':
-          this.pendingSignaturePosition = { x: event.x, y: event.y, page: event.page - 1 };
+          this.pendingSignaturePosition = {
+            x: event.x,
+            y: event.y,
+            page: event.page - 1,
+          };
           this.showSignaturePad = true;
           return;
 
         case 'date': {
           const today = new Date();
           const dateStr = today.toLocaleDateString('fr-FR', {
-            day: '2-digit', month: '2-digit', year: 'numeric',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
           });
           const fieldHeight = (this.textProperties.fontSize || 12) * 1.5;
           newField = {
@@ -521,7 +615,9 @@ export class AppComponent implements OnInit {
       this.currentDocument.updatedAt = new Date();
       this.saveState();
     } catch (error) {
-      this.notificationService.error("Erreur lors de l'ajout du champ. Veuillez réessayer.");
+      this.notificationService.error(
+        "Erreur lors de l'ajout du champ. Veuillez réessayer.",
+      );
     }
   }
 
@@ -543,8 +639,18 @@ export class AppComponent implements OnInit {
             const width = img.width * ratio;
             const height = img.height * ratio;
             const imageY = y - height / 2;
-            const newField = await this.pdfService.addImage(dataUrl, x, imageY, pageIndex, width, height);
-            this.currentDocument.fields = [...this.currentDocument.fields, newField];
+            const newField = await this.pdfService.addImage(
+              dataUrl,
+              x,
+              imageY,
+              pageIndex,
+              width,
+              height,
+            );
+            this.currentDocument.fields = [
+              ...this.currentDocument.fields,
+              newField,
+            ];
             this.currentDocument.updatedAt = new Date();
             this.saveState();
           };
@@ -561,7 +667,9 @@ export class AppComponent implements OnInit {
   // ─── Mise à jour des champs ───────────────────────────────────────────────
 
   onFieldTextEdit(event: { field: PDFField; newText: string }): void {
-    const index = this.currentDocument.fields.findIndex((f) => f.id === event.field.id);
+    const index = this.currentDocument.fields.findIndex(
+      (f) => f.id === event.field.id,
+    );
     if (index !== -1) {
       this.currentDocument.fields[index] = {
         ...this.currentDocument.fields[index],
@@ -572,7 +680,9 @@ export class AppComponent implements OnInit {
   }
 
   onFieldUpdated(updated: PDFField): void {
-    const index = this.currentDocument.fields.findIndex((f) => f.id === updated.id);
+    const index = this.currentDocument.fields.findIndex(
+      (f) => f.id === updated.id,
+    );
     if (index !== -1) {
       this.currentDocument.fields[index] = updated;
       this.currentDocument.updatedAt = new Date();
@@ -585,7 +695,9 @@ export class AppComponent implements OnInit {
   }
 
   onFieldPropertiesUpdated(field: PDFField): void {
-    const index = this.currentDocument.fields.findIndex((f) => f.id === field.id);
+    const index = this.currentDocument.fields.findIndex(
+      (f) => f.id === field.id,
+    );
     if (index !== -1) {
       this.currentDocument.fields[index] = field;
       this.currentDocument.updatedAt = new Date();
@@ -602,7 +714,9 @@ export class AppComponent implements OnInit {
 
     if (!fieldToDelete) return;
 
-    this.currentDocument.fields = this.currentDocument.fields.filter((f) => f.id !== fieldId);
+    this.currentDocument.fields = this.currentDocument.fields.filter(
+      (f) => f.id !== fieldId,
+    );
     this.currentDocument.updatedAt = new Date();
     this.selectedField = null;
     this.saveState();
@@ -638,7 +752,9 @@ export class AppComponent implements OnInit {
 
   async onExport(signed: boolean = false): Promise<void> {
     if (this.currentDocument.fields.length === 0) {
-      this.notificationService.warning("Aucun champ à exporter. Ajoutez des éléments avant d'exporter.");
+      this.notificationService.warning(
+        "Aucun champ à exporter. Ajoutez des éléments avant d'exporter.",
+      );
       return;
     }
 
@@ -659,7 +775,9 @@ export class AppComponent implements OnInit {
         this.sendSignedDocument(file);
       }
     } catch (error) {
-      this.notificationService.error("Erreur lors de l'export du PDF. Veuillez réessayer.");
+      this.notificationService.error(
+        "Erreur lors de l'export du PDF. Veuillez réessayer.",
+      );
       console.error(error);
     }
   }
@@ -698,9 +816,10 @@ export class AppComponent implements OnInit {
 
       // 4. Ouvrir la modale — previewPdfUrl est déjà set, ngOnChanges se déclenche une seule fois
       this.showPdfPreviewModal = true;
-
     } catch (error) {
-      this.notificationService.error('Erreur lors de la prévisualisation du PDF.');
+      this.notificationService.error(
+        'Erreur lors de la prévisualisation du PDF.',
+      );
     }
   }
 
@@ -775,7 +894,9 @@ export class AppComponent implements OnInit {
     this.currentDocument.name = name;
     this.saveToStorage();
     this.showOtpModal = false;
-    this.notificationService.success('Code OTP vérifié avec succès ! Redirection en cours...');
+    this.notificationService.success(
+      'Code OTP vérifié avec succès ! Redirection en cours...',
+    );
     this.onExport(true);
   }
 
@@ -824,7 +945,9 @@ export class AppComponent implements OnInit {
     } else {
       this.showSavedDocuments = false;
       setTimeout(() => {
-        const fileInput = window.document.getElementById('pdfInput') as HTMLInputElement;
+        const fileInput = window.document.getElementById(
+          'pdfInput',
+        ) as HTMLInputElement;
         if (fileInput) fileInput.click();
       }, 300);
     }
@@ -854,7 +977,9 @@ export class AppComponent implements OnInit {
       this.selectedField &&
       (this.selectedField.type === 'text' || this.selectedField.type === 'date')
     ) {
-      const index = this.currentDocument.fields.findIndex((f) => f.id === this.selectedField!.id);
+      const index = this.currentDocument.fields.findIndex(
+        (f) => f.id === this.selectedField!.id,
+      );
       if (index !== -1) {
         this.currentDocument.fields[index] = {
           ...this.currentDocument.fields[index],
@@ -899,7 +1024,13 @@ export class AppComponent implements OnInit {
     data:
       | string
       | { x: number; y: number; width: number; height: number }
-      | { dataUrl: string; x: number; y: number; width: number; height: number },
+      | {
+          dataUrl: string;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        },
   ): void {
     if (typeof data === 'object' && 'x' in data && !('dataUrl' in data)) {
       const redactField: PDFField = {
@@ -912,7 +1043,10 @@ export class AppComponent implements OnInit {
         value: '',
         page: this.currentDocument.currentPage - 1,
       };
-      this.currentDocument.fields = [...this.currentDocument.fields, redactField];
+      this.currentDocument.fields = [
+        ...this.currentDocument.fields,
+        redactField,
+      ];
       this.currentDocument.updatedAt = new Date();
       this.saveState();
       this.isDrawingMode = false;
@@ -934,7 +1068,9 @@ export class AppComponent implements OnInit {
         page: this.currentDocument.currentPage - 1,
         isAnnotation: true,
         isHighlight,
-        ...(isHighlight && { blendMode: this.drawingOptions.blendMode || 'multiply' }),
+        ...(isHighlight && {
+          blendMode: this.drawingOptions.blendMode || 'multiply',
+        }),
       };
       this.currentDocument.fields = [...this.currentDocument.fields, newField];
       this.currentDocument.updatedAt = new Date();
